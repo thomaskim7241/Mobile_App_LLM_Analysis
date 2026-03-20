@@ -1,0 +1,29 @@
+- Weekly usage CSV:
+  - PanelistID (Key)
+- Week (start date of observation week)
+- AppDescription (Application used like TikTok, Chrome etc)
+- ForegroundDuration (minutes the app was active on screen)
+- User info CSV:
+  - PanelistID (Key)
+- Age, Gender, City
+- Treated (Indicator for whether user used an AI agent before)
+- Morning (average app usage during 6am-11am)
+- Afternoon (average app usage during 12pm-5pm)
+- Evening (app usage during 6pm-5am)
+- Weekday (Average app usage during Mon-Fri)
+- Weekend (Average app usage during Sat-Sun)
+- Duration typically in minutes but could be seconds - need to verify
+- Only contains phone usage of AI apps, no laptop information
+- Control group provided to isolate temporal trends from actual AI impact
+
+### Project Scope & Deliverables
+
+- Business objective: How does LLM applications change the landscape of Mobile App ecosystem?
+  - Who is affected and when
+- How much usage changes and how behavior shifts
+- What specific apps are impacted
+- Effects on different user groups (heterogeneity analysis)
+- Main deliverables:
+  1. Knowledge transfer document (paper-like but not exactly)
+2. Executive summary
+3. Correctly packaged coding project (clean, replicable code)
