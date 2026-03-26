@@ -2,7 +2,7 @@
   - PanelistID (Key)
 - Week (start date of observation week)
 - AppDescription (Application used like TikTok, Chrome etc)
-- ForegroundDuration (minutes the app was active on screen)
+- ForegroundDuration (Seconds) (She said minutes but unless someone spent 245 days on manga in a week its seconds)
 - User info CSV:
   - PanelistID (Key)
 - Age, Gender, City
