@@ -7,7 +7,6 @@ The dataset has already been partially cleaned:
 - Exact duplicates already removed from Usage_df with distinct()
 
 ## TASK 1 — FINISH DATA CLEANING
-Step 1: Load libraries and data
 library(tidyverse)
 library(caret)
 library(randomForest)
@@ -20,27 +19,47 @@ AI_App_Names_df  <- read_csv('AI_App_Names.csv')
 Step 2: Remove exact duplicates from Usage_df
 Usage_df <- Usage_df %>% distinct()
 
-Step 3: Fix User_df duplicates — keep second record per PANELISTID
+Step 3: Aggregate numerical numbers and merge panelistIDS (I believe this method
+                                                           is best for analytical purposes)
 User_df <- User_df %>%
   group_by(PANELISTID) %>%
-  slice_tail(n = 1) %>%
-  ungroup()
+  summarise(
+    AGE      = first(AGE),
+    GENDER   = first(GENDER),
+    CITY     = first(CITY),
+    TREATED  = first(TREATED),
+    Weekday   = mean(Weekday, na.rm = TRUE),
+    Weekend   = mean(Weekend, na.rm = TRUE),
+    Morning   = mean(Morning, na.rm = TRUE),
+    Afternoon = mean(Afternoon, na.rm = TRUE),
+    Night     = mean(Night, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 Step 4: Flag missing AGE and Unknown gender
 User_df <- User_df %>%
   mutate(AGE_MISSING = is.na(AGE))
 
-Step 5: Handle FOREGROUNDDURATION outliers using IQR method
-Q1 <- quantile(Usage_df$FOREGROUNDDURATION, 0.25, na.rm = TRUE)
-Q3 <- quantile(Usage_df$FOREGROUNDDURATION, 0.75, na.rm = TRUE)
-IQR_val <- Q3 - Q1
-Usage_df <- Usage_df %>%
-  filter(FOREGROUNDDURATION <= Q3 + 1.5 * IQR_val,
-         FOREGROUNDDURATION >= 0)
+# Step 5: Foregroundduration has been determined as systematically distributed 
+# between both groups
+# # Allows robustness check later if needed
+# Usage_df <- Usage_df %>%
+#   mutate(IS_EXTREME = FOREGROUNDDURATION > 10080)
+# 
+# # Check if extreme values are balanced across treatment groups
+# Usage_df %>%
+#   left_join(User_df %>% select(PANELISTID, TREATED), by = "PANELISTID") %>%
+#   group_by(TREATED, IS_EXTREME) %>%
+#   summarise(n = n(), .groups = "drop")
 
 Step 6: Flag AI apps in Usage_df
 Usage_df <- Usage_df %>%
   mutate(IS_AI = APPDESCRIPTION %in% AI_App_Names_df$APPDESCRIPTION)
+
+Step 7: Filling in numerical NA values
+User_df <- User_df %>%
+  mutate(across(c(Weekday, Weekend, Morning, Afternoon, Night),
+                ~replace_na(.x, 0)))
 
 ## TASK 2 — BUILD PANEL-LEVEL FEATURES FOR ML
 
@@ -63,6 +82,7 @@ panel_df <- Usage_df %>%
             Weekday, Weekend, Morning, Afternoon, Night, AGE_MISSING),
             by = "PANELISTID")
 
+
 ## TASK 3 — ADDRESS CLASS IMBALANCE
 
 Step 1: Check the imbalance
@@ -83,18 +103,18 @@ rf_df <- panel_df %>%
   drop_na()
 
 Step 3: Stratified train/test split (70/30)
-set.seed(42)
+set.seed(777)
 train_index <- createDataPartition(rf_df$TREATED, p = 0.7, 
                                     list = FALSE, times = 1)
 train_df <- rf_df[train_index, ]
 test_df  <- rf_df[-train_index, ]
 
-Verify stratification worked:
+Verify stratification worked
 prop.table(table(train_df$TREATED))
 prop.table(table(test_df$TREATED))
 
 Step 4: Train Random Forest WITH class weighting to handle imbalance
-Calculate class weights inversely proportional to class frequency:
+Calculate class weights inversely proportional to class frequency
 class_counts <- table(train_df$TREATED)
 class_weights <- max(class_counts) / class_counts
 
@@ -104,7 +124,7 @@ rf_model <- randomForest(
   ntree = 500,
   classwt = class_weights,
   importance = TRUE,
-  seed = 42
+  seed = 777
 )
 
 Step 5: Evaluate using proper metrics for imbalanced data
@@ -113,7 +133,7 @@ conf_matrix <- confusionMatrix(predictions, test_df$TREATED,
                                 positive = "1")
 print(conf_matrix)
 
-Get AUC-ROC:
+Get AUC-ROC
 library(pROC)
 prob_predictions <- predict(rf_model, test_df, type = "prob")[,2]
 roc_obj <- roc(as.numeric(test_df$TREATED) - 1, prob_predictions)
@@ -121,7 +141,7 @@ auc(roc_obj)
 
 ## TASK 4 — SUMMARY STATISTICS FOR WORD DOCUMENT
 
-Produce these summary statistics tables for the submission:
+Produce these summary statistics tables for the submission
 
 # Overall panel summary
 summary(panel_df)
