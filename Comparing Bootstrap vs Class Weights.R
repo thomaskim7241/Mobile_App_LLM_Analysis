@@ -29,7 +29,7 @@ prop.table(table(rf_df$TREATED))
 # Test set is always the original distribution so evaluation is realistic
 # =============================================================================
 
-set.seed(42)
+set.seed(777)
 train_index    <- createDataPartition(rf_df$TREATED, p = 0.7, list = FALSE)
 train_original <- rf_df[train_index, ]
 test_df        <- rf_df[-train_index, ]
@@ -46,7 +46,7 @@ prop.table(table(test_df$TREATED))
 class_counts  <- table(train_original$TREATED)
 class_weights <- max(class_counts) / class_counts
 
-set.seed(42)
+set.seed(777)
 rf_weighted <- randomForest(
   TREATED ~ .,
   data       = train_original,
@@ -81,7 +81,7 @@ control_train <- train_original %>% filter(TREATED == 0)
 cat("\nOriginal training set — Treated:", nrow(treated_train),
     "Control:", nrow(control_train), "\n")
 
-set.seed(42)
+set.seed(777)
 treated_boot <- treated_train %>%
   slice_sample(n = nrow(control_train), replace = TRUE)
 
@@ -90,7 +90,7 @@ train_boot <- bind_rows(treated_boot, control_train)
 cat("Bootstrapped training set — Treated:", nrow(treated_boot),
     "Control:", nrow(control_train), "\n")
 
-set.seed(42)
+set.seed(777)
 rf_boot <- randomForest(
   TREATED ~ .,
   data       = train_boot,
