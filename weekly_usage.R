@@ -119,7 +119,7 @@ weekly_usage_trans <- as(weekly_usage_matrix, "transactions")
 inspect(head(weekly_usage_trans, n=10))
 
 # descending order of the most frequent items/apps
-item_freq <- itemFrequency(weekly_usage_trans) 
+item_freq <- itemFrequency(weekly_usage_trans, type='absolute') 
 head(sort(item_freq, decreasing = TRUE), 200)
 
 # overall summary of basket and item frequency
