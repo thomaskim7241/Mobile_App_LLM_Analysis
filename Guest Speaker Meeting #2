@@ -1,0 +1,194 @@
+# Project Briefing for Claude Code
+# IDSC 4521 — Mobile LLM App Landscape Analysis
+# Author: Thomas Kim
+
+---
+
+## PROJECT OVERVIEW
+
+This is a data analytics research project analyzing how LLM (large language model) 
+mobile apps affect the broader mobile app ecosystem. The dataset was collected in 2023 
+and the goal is to understand how adoption of AI apps like ChatGPT changes usage 
+patterns of other mobile apps. This project will be submitted as a knowledge transfer 
+document and clean replicable code package, and may be published academically.
+
+---
+
+## FILE STRUCTURE
+
+Working directory: ~/Documents/IDSC_4521/LLM_App_Analytics
+
+Files in project:
+- Base.R              : Main analysis script (primary working file)
+- Variables.R         : Variable descriptions and project scope notes
+- .gitignore          : Excludes weekly_usage.csv and user_info.csv from Git
+- CLAUDE_BRIEFING.md  : This file
+
+Data files (local only, not pushed to Git):
+- weekly_usage.csv    : 20,868,730 observations, 4 variables (Usage_df)
+- user_info.csv       : 11,793 observations, 10 variables (User_df)
+
+GitHub repo: https://github.com/thomaskim7241/Mobile_App_LLM_Analysis.git
+
+---
+
+## DATASETS
+
+### Usage_df (weekly_usage.csv)
+20,868,730 rows, 4 columns:
+- PANELISTID         : Unique user identifier (join key to User_df)
+- WEEK               : Start date of observation week (weekly aggregation Mon-Sun)
+- APPDESCRIPTION     : Name of the mobile app used
+- FOREGROUNDDURATION : Weekly cumulative app usage — confirmed in MINUTES
+                       Aggregated from session-level records (open to close)
+                       Values above 10,080 minutes are impossible (minutes in a week)
+                       Use IQR method or top 1-5% percentile for outlier detection
+
+### User_df (user_info.csv)
+11,793 rows, 10 columns:
+- PANELISTID  : Unique user identifier (join key to Usage_df)
+- AGE         : User age (numeric, has ~295 missing values)
+- GENDER      : Male / Female / Unknown (114 Unknown users identified)
+- CITY        : User city and state
+- TREATED     : 1 = used an AI/LLM app, 0 = control group (never used AI app)
+- Weekday     : Average DAILY app usage on weekdays (Mon-Fri) — in minutes
+- Weekend     : Average DAILY app usage on weekends (Sat-Sun) — in minutes
+- Morning     : Average app usage during 6am-11am — in minutes, daily average
+- Afternoon   : Average app usage during 12pm-5pm — in minutes, daily average
+- Night       : Average app usage during 6pm-5am — in minutes, daily average
+
+IMPORTANT: Weekday/Weekend and Morning/Afternoon/Night are DAILY AVERAGES not 
+weekly totals. They are independent measures and cannot be summed to equal each 
+other. Do not treat them as additive.
+
+---
+
+## DATA ISSUES IDENTIFIED AND HOW TO HANDLE THEM
+
+### Issue 1 — Exact duplicate rows in Usage_df
+442,790 exact duplicate rows found (all 4 columns identical).
+FIX: Remove with distinct()
+Usage_df <- Usage_df %>% distinct()
+
+### Issue 2 — Duplicate PANELISTIDs in User_df
+85 unique panelists appear 4 times each instead of once.
+Pattern: 2 distinct Weekday/Weekend values x 2 distinct Morning/Afternoon/Night 
+values = 4 rows per panelist. Likely caused by two separate aggregation tables 
+being joined without a time period key during data construction.
+CLIENT GUIDANCE: Keep the second record (slice_tail) — differences are minimal 
+and caused by database extraction artifacts.
+FIX:
+User_df <- User_df %>%
+  group_by(PANELISTID) %>%
+  slice_tail(n = 1) %>%
+  ungroup()
+
+### Issue 3 — Missing values in User_df (351 total NAs)
+295 unique panelists have at least one NA. Missing values are almost entirely 
+in AGE. The 57 panelists missing AGE are also missing GENDER (shown as Unknown)
+and are 100% in the treated group with significantly higher usage than average.
+These are NOT missing at random — they appear to be a distinct behavioral segment.
+DECISION: Keep them as a separate segment. Do not drop. Flag with AGE_MISSING column.
+User_df <- User_df %>% mutate(AGE_MISSING = is.na(AGE))
+
+### Issue 4 — Unknown gender users (114 total)
+57 have missing AGE, 57 have valid AGE but unknown gender.
+All 114 are heavily skewed toward treated group (78% treated vs 10-21% for 
+known genders). Higher usage across all time periods. Treat as distinct segment.
+
+### Issue 5 — FOREGROUNDDURATION outliers
+Values cluster near 20,000 minutes for some apps suggesting a data cap.
+Values above 10,080 minutes per week are theoretically impossible.
+Extreme values likely caused by background apps (Samsung Home UI, Settings) 
+running passively while user does other things.
+CLIENT GUIDANCE: Use IQR method or top 1%/5% percentile cutoffs. Do not use 
+a fixed hard cutoff. Both treatment and control groups affected equally so 
+directional bias is minimal.
+FIX:
+Q1 <- quantile(Usage_df$FOREGROUNDDURATION, 0.25, na.rm = TRUE)
+Q3 <- quantile(Usage_df$FOREGROUNDDURATION, 0.75, na.rm = TRUE)
+IQR_val <- Q3 - Q1
+Usage_df <- Usage_df %>%
+  mutate(IS_OUTLIER = FOREGROUNDDURATION > Q3 + 1.5 * IQR_val |
+                      FOREGROUNDDURATION < Q1 - 1.5 * IQR_val)
+
+### Issue 6 — Zero duration values
+~14,000 observations with FOREGROUNDDURATION = 0. Mostly from one app (App Cache 
+Walk). CLIENT GUIDANCE: Zeros are legitimate — users have apps installed they 
+never open. Do not drop. Consider categorizing apps by usage frequency instead.
+
+### Issue 7 — App name encoding issues
+107,588 unique app names in APPDESCRIPTION. Many have garbled characters from 
+encoding mismatches (non-Latin scripts, special characters showing as _x0003_ etc).
+These are likely non-English apps. Cannot be classified by keyword matching.
+
+---
+
+## AI APP CLASSIFICATION
+
+A lookup table of 148 LLM/AI apps has been identified from the unique app names.
+This is stored as AI_App_Names_df loaded from a CSV.
+A new column IS_AI has been created in Usage_df:
+Usage_df <- Usage_df %>%
+  mutate(IS_AI = APPDESCRIPTION %in% AI_App_Names_df$APPDESCRIPTION)
+
+Classification criteria:
+- INCLUDED: Apps whose PRIMARY purpose is LLM/AI interaction (ChatGPT, Claude, 
+  Gemini, Perplexity, Character AI, Copilot, Grok, Midjourney, DALL-E, etc.)
+- INCLUDED: Generic AI chat apps, GPT-branded apps, AI image generators
+- EXCLUDED: Apps with AI as a secondary feature (Duolingo, Bing Search, Grammarly)
+- EXCLUDED: System apps, games, utilities that happen to use AI keyword
+
+---
+
+## TREATMENT GROUP DEFINITION
+
+TREATED = 1 means the panelist used at least one AI/LLM mobile app during the 
+study period. This was defined by the client (Professor Kim) based on mobile app 
+usage only — browser-based ChatGPT use on desktop/laptop does NOT count as treated.
+~1,800 treated users (originally ~1,600 but ~200 Claude users added later).
+~9,900 control users who used mobile apps but no AI/LLM apps.
+
+---
+
+## ANALYSIS OBJECTIVES
+
+Primary business question: How does LLM app adoption change mobile app usage 
+behavior across the broader ecosystem?
+
+Sub-questions to explore:
+1. General impact — does overall non-AI app usage go up or down after AI adoption?
+2. Which app categories are most affected (social media, search, entertainment, etc)?
+3. Heterogeneity — which user groups (age, gender, city) are most affected?
+4. Convergence vs divergence — does behavior become more similar or more varied?
+5. Timing — when does the effect start showing relative to AI app adoption?
+
+Recommended methods (from client):
+- EDA and visualization first
+- Correlation analysis
+- Clustering and association/market basket analysis
+- Predictive models (decision trees, random forests)
+- Causal inference / difference-in-differences using control group
+
+---
+
+## CODING STANDARDS
+
+This project requires clean, replicable, professional code as a deliverable.
+- Use tidyverse throughout (dplyr, ggplot2, readr)
+- Add comments to every meaningful code block
+- Use section dividers: # === SECTION NAME ===
+- Use descriptive variable names (not x, y, z)
+- No dead-end code, no error-producing lines
+- setwd("~/Documents/IDSC_4521/LLM_App_Analytics") at top of every script
+- library() calls grouped at top of script
+
+---
+
+## CONTACT / REPO
+
+Student: Thomas Kim
+Email: thomaskim2457@gmail.com
+GitHub: thomaskim7241
+Repo: https://github.com/thomaskim7241/Mobile_App_LLM_Analysis.git
+Portfolio: thomaskim7241.github.io
