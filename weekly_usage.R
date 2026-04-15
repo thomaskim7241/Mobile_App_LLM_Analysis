@@ -1,6 +1,4 @@
 # install and load libraries
-install.packages('tidyverse')
-install.packages('arules')
 library(tidyverse)
 library(arules) # used for apriori algorithm
 

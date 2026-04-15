@@ -210,3 +210,56 @@ view(Usage_df$FOREGROUNDDURATION)
 #   arrange(APPDESCRIPTION)
 
 # write_xlsx(unique_apps, "~/Documents/IDSC_4521/LLM_App_Analytics/unique_apps.xlsx")
+
+# =============================================================================
+# Confirm TREATED variable definition
+# =============================================================================
+
+# 1. Check what TREATED values exist
+table(User_df$TREATED)
+
+# 2. Check if treated users actually appear in Usage_df using AI apps
+treated_ids <- User_df %>% filter(TREATED == 1) %>% pull(PANELISTID)
+control_ids <- User_df %>% filter(TREATED == 0) %>% pull(PANELISTID)
+
+# Do treated users have AI app usage records?
+Usage_df %>%
+  filter(PANELISTID %in% treated_ids, IS_AI == TRUE) %>%
+  summarise(
+    n_treated_with_ai_usage = n_distinct(PANELISTID),
+    total_treated = length(treated_ids),
+    pct_with_ai_records = n_distinct(PANELISTID) / length(treated_ids) * 100
+  )
+
+# Do any control users appear with AI app usage?
+Usage_df %>%
+  filter(PANELISTID %in% control_ids, IS_AI == TRUE) %>%
+  summarise(
+    n_control_with_ai_usage = n_distinct(PANELISTID),
+    total_control = length(control_ids),
+    pct_with_ai_records = n_distinct(PANELISTID) / length(control_ids) * 100
+  )
+
+# # =============================================================================
+# # Confirm which AI apps treated users actually used
+# # =============================================================================
+# 
+# # What AI apps do treated users use most
+# Usage_df %>%
+#   filter(PANELISTID %in% treated_ids, IS_AI == TRUE) %>%
+#   group_by(APPDESCRIPTION) %>%
+#   summarise(
+#     n_users = n_distinct(PANELISTID),
+#     total_duration = sum(FOREGROUNDDURATION, na.rm = TRUE)
+#   ) %>%
+#   arrange(desc(n_users)) %>% 
+#   print(n = 122)
+# 
+# # What AI apps do control users use (should be zero or near zero)
+# Usage_df %>%
+#   filter(PANELISTID %in% control_ids, IS_AI == TRUE) %>%
+#   group_by(APPDESCRIPTION) %>%
+#   summarise(n_users = n_distinct(PANELISTID)) %>%
+#   arrange(desc(n_users)) %>%
+#   head(20)
+

@@ -6,3 +6,13 @@ weekly_usage.csv
 user_info.csv
 user_info.R
 unique_apps_final.xlsx
+data/*.rds
+data/*.csv
+*.csv
+!data/app_category_map.csv
+!data/AI_App_Names.csv
+output/
+.Rhistory
+.RData
+.Rproj.user/
+.DS_Store

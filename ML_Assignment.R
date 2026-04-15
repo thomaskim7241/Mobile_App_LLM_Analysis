@@ -6,84 +6,9 @@ The dataset has already been partially cleaned:
 - IS_AI column already exists in Usage_df flagging LLM apps
 - Exact duplicates already removed from Usage_df with distinct()
 
-## TASK 1 — FINISH DATA CLEANING
-library(tidyverse)
-library(caret)
-library(randomForest)
-library(writexl)
-setwd("~/Documents/IDSC_4521/LLM_App_Analytics")
-Usage_df <- read_csv("weekly_usage.csv")
-User_df <- read_csv("user_info.csv")
-AI_App_Names_df  <- read_csv('AI_App_Names.csv')
+## TASK 1 — Data Cleaning in Cleaning Data.R
 
-Step 2: Remove exact duplicates from Usage_df
-Usage_df <- Usage_df %>% distinct()
-
-Step 3: Aggregate numerical numbers and merge panelistIDS (I believe this method
-                                                           is best for analytical purposes)
-User_df <- User_df %>%
-  group_by(PANELISTID) %>%
-  summarise(
-    AGE      = first(AGE),
-    GENDER   = first(GENDER),
-    CITY     = first(CITY),
-    TREATED  = first(TREATED),
-    Weekday   = mean(Weekday, na.rm = TRUE),
-    Weekend   = mean(Weekend, na.rm = TRUE),
-    Morning   = mean(Morning, na.rm = TRUE),
-    Afternoon = mean(Afternoon, na.rm = TRUE),
-    Night     = mean(Night, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-Step 4: Flag missing AGE and Unknown gender
-User_df <- User_df %>%
-  mutate(AGE_MISSING = is.na(AGE))
-
-# Step 5: Foregroundduration has been determined as systematically distributed 
-# between both groups
-# # Allows robustness check later if needed
-# Usage_df <- Usage_df %>%
-#   mutate(IS_EXTREME = FOREGROUNDDURATION > 10080)
-# 
-# # Check if extreme values are balanced across treatment groups
-# Usage_df %>%
-#   left_join(User_df %>% select(PANELISTID, TREATED), by = "PANELISTID") %>%
-#   group_by(TREATED, IS_EXTREME) %>%
-#   summarise(n = n(), .groups = "drop")
-
-Step 6: Flag AI apps in Usage_df
-Usage_df <- Usage_df %>%
-  mutate(IS_AI = APPDESCRIPTION %in% AI_App_Names_df$APPDESCRIPTION)
-
-Step 7: Filling in numerical NA values
-User_df <- User_df %>%
-  mutate(across(c(Weekday, Weekend, Morning, Afternoon, Night),
-                ~replace_na(.x, 0)))
-
-## TASK 2 — BUILD PANEL-LEVEL FEATURES FOR ML
-
-Create a user-level summary dataset that aggregates Usage_df to one row per 
-panelist. This becomes the feature matrix for the Random Forest.
-
-panel_df <- Usage_df %>%
-  group_by(PANELISTID) %>%
-  summarise(
-    total_duration = sum(FOREGROUNDDURATION, na.rm = TRUE),
-    avg_weekly_duration = mean(FOREGROUNDDURATION, na.rm = TRUE),
-    n_unique_apps = n_distinct(APPDESCRIPTION),
-    n_weeks_observed = n_distinct(WEEK),
-    ai_app_duration = sum(FOREGROUNDDURATION[IS_AI == TRUE], na.rm = TRUE),
-    non_ai_duration = sum(FOREGROUNDDURATION[IS_AI == FALSE], na.rm = TRUE),
-    pct_ai_usage = ai_app_duration / total_duration,
-    n_ai_apps_used = n_distinct(APPDESCRIPTION[IS_AI == TRUE])
-  ) %>%
-  left_join(User_df %>% select(PANELISTID, AGE, GENDER, CITY, TREATED,
-            Weekday, Weekend, Morning, Afternoon, Night, AGE_MISSING),
-            by = "PANELISTID")
-
-
-## TASK 3 — ADDRESS CLASS IMBALANCE
+## TASK 2 — ADDRESS CLASS IMBALANCE WITH CLASS WEIGHTING
 
 Step 1: Check the imbalance
 table(panel_df$TREATED)
@@ -139,9 +64,7 @@ prob_predictions <- predict(rf_model, test_df, type = "prob")[,2]
 roc_obj <- roc(as.numeric(test_df$TREATED) - 1, prob_predictions)
 auc(roc_obj)
 
-## TASK 4 — SUMMARY STATISTICS FOR WORD DOCUMENT
-
-Produce these summary statistics tables for the submission
+## TASK 3 — SUMMARY STATISTICS
 
 # Overall panel summary
 summary(panel_df)
@@ -170,24 +93,3 @@ importance_df <- as.data.frame(importance(rf_model)) %>%
   rownames_to_column("Feature") %>%
   arrange(desc(MeanDecreaseGini))
 print(importance_df)
-
-## TASK 5 — EXPORT SUMMARY STATS TO EXCEL FOR WORD DOC
-
-write_xlsx(list(
-  "Panel Summary by Treatment" = panel_df %>%
-    group_by(TREATED) %>%
-    summarise(across(where(is.numeric), 
-              list(mean = ~mean(.x, na.rm = TRUE),
-                   sd = ~sd(.x, na.rm = TRUE)),
-              .names = "{.col}_{.fn}")),
-  "Feature Importance" = importance_df,
-  "Class Distribution" = as.data.frame(table(panel_df$TREATED)) %>%
-    mutate(Proportion = Freq / sum(Freq))
-), "ML_Assignment_Summary.xlsx")
-
-## CODING STANDARDS
-- Add a comment above every code block explaining what it does
-- Use section dividers: # === SECTION NAME ===
-- Use descriptive variable names throughout
-- Print outputs at each step so progress is visible
-- Save the final script as ML_Assignment.R
