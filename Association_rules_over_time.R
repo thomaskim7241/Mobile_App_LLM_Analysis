@@ -352,575 +352,607 @@ rules_over_time %>%
   print(n = Inf)
 
 
-
-
-### make model to see banking models vs AI usage with treated vs untreated users
-# Define treated_ids from User_df
-treated_ids <- User_df %>%
-  filter(TREATED == 1) %>%
-  pull(PANELISTID)
-
-# What banking apps are Gemini users actually using
-gemini_users <- Usage_df %>%
-  filter(PANELISTID %in% treated_ids, AI_CANONICAL == "Gemini") %>%
-  pull(PANELISTID) %>% unique()
-
-Usage_df %>%
-  filter(PANELISTID %in% gemini_users,
-         APPDESCRIPTION %in% (app_categories %>% 
-                                filter(category == "Banking & Finance") %>% 
-                                pull(ITEM))) %>%
-  group_by(APPDESCRIPTION) %>%
-  summarise(n_users = n_distinct(PANELISTID),
-            total_duration = sum(FOREGROUNDDURATION, na.rm = TRUE)) %>%
-  arrange(desc(n_users)) %>%
-  head(15)
-
-
-audio_apps <- app_categories %>% filter(category == "Streaming Audio") %>% pull(ITEM)
-
-# Compare audio app usage: treated vs hypothetical baseline
-Usage_df %>%
-  filter(APPDESCRIPTION %in% audio_apps) %>%
-  mutate(treated = PANELISTID %in% treated_ids) %>%
-  group_by(APPDESCRIPTION, treated) %>%
-  summarise(n_users = n_distinct(PANELISTID), .groups = "drop") %>%
-  pivot_wider(names_from = treated, values_from = n_users, 
-              names_prefix = "treated_", values_fill = 0) %>%
-  mutate(treated_rate = treated_TRUE / 1623,
-         control_rate = treated_FALSE / 9915,
-         gap = treated_rate - control_rate) %>%
-  arrange(gap)
-
-
-
-# Average monthly AI app duration per treated user
-ai_duration_per_user <- Usage_df %>%
-  filter(PANELISTID %in% treated_ids, IS_AI == TRUE) %>%
-  group_by(PANELISTID) %>%
-  summarise(total_minutes_year = sum(FOREGROUNDDURATION, na.rm = TRUE)) %>%
-  summarise(avg_monthly_minutes = mean(total_minutes_year) / 12) %>%
-  pull(avg_monthly_minutes)
-
-cat("Average monthly AI minutes per treated user:", round(ai_duration_per_user, 1), "\n")
-
-
-
-rules_over_time %>%
-  mutate(period = if_else(month < as.Date("2023-07-01"), "H1 2023", "H2 2023")) %>%
-  group_by(period, lhs, rhs) %>%
-  summarise(avg_lift = mean(lift), .groups = "drop") %>%
-  pivot_wider(names_from = period, values_from = avg_lift) %>%
-  mutate(change = `H2 2023` - `H1 2023`) %>%
-  arrange(desc(abs(change))) %>%
-  head(15)
-
-
-
-gemini_telecom <- Usage_df %>%
-  filter(PANELISTID %in% gemini_users,
-         month(WEEK) %in% c(7, 9),
-         APPDESCRIPTION %in% (app_categories %>% 
-                                filter(category == "Telecom") %>% pull(ITEM))) %>%
-  group_by(APPDESCRIPTION, MONTH = floor_date(WEEK, "month")) %>%
-  summarise(n_users = n_distinct(PANELISTID), .groups = "drop") %>%
-  arrange(desc(n_users))
-gemini_telecom
-
+# # =============================================================================
+# # Logistic regression: Does AI adoption predict financial app usage?
+# # Outcome: Binary indicator for whether the user uses any finance app
+# # Predictors: AI adoption, controls
+# # Visualization: User segment coloring for interpretability
+# # =============================================================================
+# 
+# library(tidyverse)
+# library(broom)
+# 
+# # Define the finance app universe from the Banking & Finance category
+# # Pulled from your actual app_categories mapping
+# finance_apps <- app_categories %>%
+#   filter(category == "Banking & Finance") %>%
+#   pull(ITEM)
+# 
+# cat("Number of finance apps in scope:", length(finance_apps), "\n")
+# 
+# # =============================================================================
+# # Build user level dataset
+# # =============================================================================
+# 
+# reg_df <- User_df %>%
+#   select(PANELISTID, AGE, GENDER, TREATED, Weekday, Weekend,
+#          Morning, Afternoon, Night) %>%
+#   # AI tool flags
+#   left_join(
+#     Usage_df %>%
+#       filter(IS_AI == TRUE) %>%
+#       group_by(PANELISTID) %>%
+#       summarise(
+#         used_chatgpt   = any(AI_CANONICAL == "ChatGPT"),
+#         used_gemini    = any(AI_CANONICAL == "Gemini"),
+#         used_character = any(AI_CANONICAL == "Character.AI"),
+#         used_nova      = any(AI_CANONICAL == "AI Chatbot Nova"),
+#         used_other_ai  = any(AI_CANONICAL == "Other AI"),
+#         total_ai_minutes = sum(FOREGROUNDDURATION, na.rm = TRUE),
+#         n_ai_apps        = n_distinct(APPDESCRIPTION),
+#         .groups = "drop"
+#       ),
+#     by = "PANELISTID"
+#   ) %>%
+#   # Finance outcome: binary indicator and intensity
+#   left_join(
+#     Usage_df %>%
+#       filter(APPDESCRIPTION %in% finance_apps, FOREGROUNDDURATION > 0) %>%
+#       group_by(PANELISTID) %>%
+#       summarise(
+#         uses_finance        = TRUE,
+#         total_finance_min   = sum(FOREGROUNDDURATION, na.rm = TRUE),
+#         n_finance_apps      = n_distinct(APPDESCRIPTION),
+#         .groups = "drop"
+#       ),
+#     by = "PANELISTID"
+#   ) %>%
+#   # Overall engagement controls
+#   left_join(
+#     Usage_df %>%
+#       group_by(PANELISTID) %>%
+#       summarise(
+#         total_minutes = sum(FOREGROUNDDURATION, na.rm = TRUE),
+#         n_apps_used   = n_distinct(APPDESCRIPTION),
+#         .groups = "drop"
+#       ),
+#     by = "PANELISTID"
+#   ) %>%
+#   mutate(
+#     across(c(used_chatgpt, used_gemini, used_character, used_nova,
+#              used_other_ai, uses_finance),
+#            ~replace_na(.x, FALSE)),
+#     across(c(used_chatgpt, used_gemini, used_character, used_nova,
+#              used_other_ai, uses_finance),
+#            as.integer),
+#     total_ai_minutes = replace_na(total_ai_minutes, 0),
+#     n_ai_apps        = replace_na(n_ai_apps, 0),
+#     total_finance_min = replace_na(total_finance_min, 0),
+#     n_finance_apps    = replace_na(n_finance_apps, 0),
+#     log_total_minutes = log(total_minutes + 1),
+#     log_n_apps        = log(n_apps_used + 1),
+#     age_group = case_when(
+#       is.na(AGE)  ~ "Unknown",
+#       AGE < 23    ~ "15-22 Student",
+#       AGE < 38    ~ "23-37 Young Prof",
+#       AGE < 58    ~ "38-57 Established",
+#       AGE >= 58   ~ "58+ Pre-Retirement"
+#     ),
+#     age_group = factor(age_group, levels = c("38-57 Established", "15-22 Student",
+#                                              "23-37 Young Prof", "58+ Pre-Retirement",
+#                                              "Unknown"))
+#   ) %>%
+#   filter(!is.na(GENDER))
+# 
+# cat("Dataset size:", nrow(reg_df), "\n")
+# cat("Finance app users:", sum(reg_df$uses_finance), 
+#     "(", round(mean(reg_df$uses_finance) * 100, 1), "%)\n\n")
+# 
+# # =============================================================================
+# # MAIN MODEL: AI tools + demographics + engagement controls
+# # =============================================================================
+# 
+# main_model <- glm(
+#   uses_finance ~ used_chatgpt + used_gemini + used_character + used_nova +
+#     used_other_ai + age_group + GENDER +
+#     log_total_minutes + log_n_apps,
+#   data   = reg_df,
+#   family = binomial(link = "logit")
+# )
+# 
+# cat("=== MAIN MODEL ===\n")
+# summary(main_model)
+# 
+# # =============================================================================
+# # Forest plot with user type coloring
+# # =============================================================================
+# 
+# coef_df <- tidy(main_model, conf.int = TRUE, exponentiate = TRUE) %>%
+#   filter(term != "(Intercept)") %>%
+#   mutate(
+#     # Clean up term names
+#     clean_term = case_when(
+#       term == "used_chatgpt"      ~ "ChatGPT",
+#       term == "used_gemini"       ~ "Gemini",
+#       term == "used_character"    ~ "Character.AI",
+#       term == "used_nova"         ~ "AI Chatbot Nova",
+#       term == "used_other_ai"     ~ "Other AI",
+#       str_detect(term, "age_group") ~ str_replace(term, "age_group", ""),
+#       term == "GENDERMale"        ~ "Male",
+#       term == "log_total_minutes" ~ "Total usage (log)",
+#       term == "log_n_apps"        ~ "App diversity (log)",
+#       TRUE ~ term
+#     ),
+#     # Categorize each predictor for color
+#     predictor_type = case_when(
+#       term %in% c("used_chatgpt", "used_gemini", "used_character",
+#                   "used_nova", "used_other_ai")    ~ "AI Tool",
+#       str_detect(term, "age_group")                ~ "Age Group",
+#       term == "GENDERMale"                         ~ "Gender",
+#       term %in% c("log_total_minutes", "log_n_apps") ~ "Engagement",
+#       TRUE ~ "Other"
+#     ),
+#     predictor_type = factor(predictor_type,
+#                             levels = c("AI Tool", "Engagement", "Age Group", "Gender")),
+#     significant = p.value < 0.05
+#   ) %>%
+#   arrange(predictor_type, desc(estimate))
+# 
+# # Forest plot
+# forest_plot <- ggplot(coef_df,
+#                       aes(x = estimate,
+#                           y = reorder(clean_term, as.numeric(predictor_type) * -1000 + estimate),
+#                           color = predictor_type)) +
+#   geom_point(size = 3.5, aes(shape = significant)) +
+#   geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.3, linewidth = 0.7) +
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
+#   scale_x_log10(breaks = c(0.5, 0.75, 1, 1.5, 2, 3, 5, 10)) +
+#   scale_color_manual(values = c(
+#     "AI Tool"    = "#2F5496",
+#     "Engagement" = "#C0504D",
+#     "Age Group"  = "#9BBB59",
+#     "Gender"     = "#8064A2"
+#   )) +
+#   scale_shape_manual(values = c("TRUE" = 19, "FALSE" = 1), guide = "none") +
+#   labs(
+#     title    = "What Predicts Finance App Usage?",
+#     subtitle = "Odds ratios from logistic regression (log scale). Reference age: 38-57 Established.",
+#     x        = "Odds Ratio (95% CI)",
+#     y        = NULL,
+#     color    = "Predictor Type",
+#     caption  = "Solid points indicate p < 0.05. Values above 1 increase odds of finance app usage."
+#   ) +
+#   theme_bw() +
+#   theme(
+#     legend.position  = "right",
+#     plot.title       = element_text(face = "bold", size = 14),
+#     plot.subtitle    = element_text(size = 11, color = "grey30"),
+#     axis.text.y      = element_text(size = 11),
+#     panel.grid.minor = element_blank()
+#   )
+# 
+# print(forest_plot)
+# ggsave("output/06_finance_odds_ratios.png", forest_plot,
+#        width = 11, height = 7, dpi = 300)
+# 
+# why did you# =============================================================================
+# # Summary output for the paper
+# # =============================================================================
+# 
+# cat("\n=== Key odds ratios for finance app usage ===\n")
+# coef_df %>%
+#   filter(predictor_type == "AI Tool") %>%
+#   select(clean_term, estimate, conf.low, conf.high, p.value) %>%
+#   mutate(across(c(estimate, conf.low, conf.high), ~round(.x, 2)),
+#          p.value = format.pval(p.value, digits = 3)) %>%
+#   print()
+# 
+# library(pscl)
+# cat("\nMcFadden Pseudo R-squared:", round(pR2(main_model)["McFadden"], 3), "\n")
+# 
+# # =============================================================================
+# # Diagnostic: Observed vs predicted finance usage rate by AI adoption status
+# # =============================================================================
+# 
+# cat("\n=== Observed finance usage rate by AI tool adoption ===\n")
+# reg_df %>%
+#   pivot_longer(c(used_chatgpt, used_gemini, used_character, used_nova, used_other_ai),
+#                names_to = "ai_tool", values_to = "used") %>%
+#   group_by(ai_tool, used) %>%
+#   summarise(finance_rate = mean(uses_finance), n = n(), .groups = "drop") %>%
+#   pivot_wider(names_from = used, values_from = c(finance_rate, n)) %>%
+#   mutate(
+#     ai_tool = str_remove(ai_tool, "used_"),
+#     gap_pct = round((finance_rate_1 - finance_rate_0) * 100, 1)
+#   ) %>%
+  # print()
 
 
 # =============================================================================
-# Pressure Test: Five questions before finalizing the paper's framing
-# Run after Cleaning.R and Association_rules_over_time.R
+# CONVERSION ANALYSIS: Does AI adoption cause finance app uptake?
+# 
+# Assumes already in environment:
+#   - User_df, Usage_df (from Cleaning.R)
+#   - app_categories (from Association_rules_over_time.R Part A)
 # =============================================================================
 
 library(tidyverse)
-library(lubridate)
 
-setwd("~/Documents/IDSC_4521/LLM_App_Analytics")
-
-# Reload the objects the questions rely on
-Usage_df        <- readRDS("data/Usage_df_cleaned.rds")
-User_df         <- readRDS("data/User_df_cleaned.rds")
-usage_adopters  <- readRDS("data/usage_adopters.rds")
-rules_over_time <- readRDS("data/rules_over_time.rds")
+# =============================================================================
+# SETUP: Rebuild helper objects
+# =============================================================================
 
 treated_ids <- User_df %>% filter(TREATED == 1) %>% pull(PANELISTID)
 control_ids <- User_df %>% filter(TREATED == 0) %>% pull(PANELISTID)
 
-# =============================================================================
-# QUESTION 1: Before/after treatment design
-# Can we actually rule out causation for Gemini banking association?
-# =============================================================================
-
-cat("\n========== QUESTION 1: BEFORE/AFTER TREATMENT ==========\n\n")
-
-# Step 1: Derive each treated user's first AI usage week as their treatment date
-treatment_dates <- Usage_df %>%
-  filter(PANELISTID %in% treated_ids, IS_AI == TRUE) %>%
-  group_by(PANELISTID) %>%
-  summarise(treatment_week = min(WEEK), .groups = "drop")
-
-cat("Treatment date distribution:\n")
-treatment_dates %>%
-  mutate(treatment_month = floor_date(treatment_week, "month")) %>%
-  count(treatment_month) %>%
-  arrange(treatment_month) %>%
-  print(n = Inf)
-
-# Step 2: Identify banking apps
-banking_apps <- c("PayPal", "Cash App", "Coinbase", "Venmo", "Google Pay",
-                  "Robinhood", "Coinbase Wallet", "Chime Banking", "Samsung Pay",
-                  "Credit Karma", "Crypto.com", "SoFi", "COIN", "Webull",
-                  "Capital One Mobile")
-
-# Step 3: Compare banking usage in the 4 weeks before vs after treatment
-before_after <- Usage_df %>%
-  filter(PANELISTID %in% treated_ids,
-         APPDESCRIPTION %in% banking_apps) %>%
-  inner_join(treatment_dates, by = "PANELISTID") %>%
-  mutate(
-    weeks_from_treatment = as.numeric(WEEK - treatment_week) / 7,
-    period = case_when(
-      weeks_from_treatment >= -4 & weeks_from_treatment < 0  ~ "Before (4wks)",
-      weeks_from_treatment >= 0  & weeks_from_treatment <= 4 ~ "After (4wks)",
-      TRUE ~ NA_character_
-    )
-  ) %>%
-  filter(!is.na(period))
-
-banking_shift <- before_after %>%
-  group_by(PANELISTID, period) %>%
-  summarise(
-    banking_minutes = sum(FOREGROUNDDURATION, na.rm = TRUE),
-    banking_apps_used = n_distinct(APPDESCRIPTION),
-    .groups = "drop"
-  ) %>%
-  pivot_wider(
-    names_from = period,
-    values_from = c(banking_minutes, banking_apps_used),
-    values_fill = 0
-  )
-
-cat("\nMean banking minutes before vs after AI adoption:\n")
-banking_shift %>%
-  summarise(
-    mean_before = mean(`banking_minutes_Before (4wks)`),
-    mean_after  = mean(`banking_minutes_After (4wks)`),
-    change_min  = mean_after - mean_before,
-    pct_change  = round((mean_after - mean_before) / mean_before * 100, 1)
-  ) %>% print()
-
-# Paired t-test
-t_test_result <- t.test(
-  banking_shift$`banking_minutes_After (4wks)`,
-  banking_shift$`banking_minutes_Before (4wks)`,
-  paired = TRUE
-)
-cat("\nPaired t-test (after vs before):\n")
-print(t_test_result)
-
-# =============================================================================
-# QUESTION 2: Clean the control group of contamination
-# =============================================================================
-
-cat("\n========== QUESTION 2: CONTROL GROUP CONTAMINATION ==========\n\n")
-
-contaminated_controls <- Usage_df %>%
-  filter(PANELISTID %in% control_ids, IS_AI == TRUE) %>%
-  pull(PANELISTID) %>%
-  unique()
-
-cat("Contaminated control users:", length(contaminated_controls), "\n")
-cat("Percentage of control group:", 
-    round(length(contaminated_controls) / length(control_ids) * 100, 2), "%\n")
-
-clean_control_ids <- setdiff(control_ids, contaminated_controls)
-cat("Clean control users:", length(clean_control_ids), "\n\n")
-
-# Check how much AI usage contaminated controls have
-contamination_intensity <- Usage_df %>%
-  filter(PANELISTID %in% contaminated_controls, IS_AI == TRUE) %>%
-  group_by(PANELISTID) %>%
-  summarise(
-    total_ai_minutes = sum(FOREGROUNDDURATION, na.rm = TRUE),
-    n_ai_weeks = n_distinct(WEEK),
-    .groups = "drop"
-  )
-
-cat("Intensity of contamination (AI usage among contaminated controls):\n")
-summary(contamination_intensity)
-
-# =============================================================================
-# QUESTION 3: Is Gemini actually an Android effect?
-# Check whether Gemini users have systematically different device signals
-# =============================================================================
-
-cat("\n========== QUESTION 3: ANDROID CONFOUND ==========\n\n")
-
-# Proxy for Android users: Samsung apps, Google Pay, My T-Mobile, etc.
-android_indicator_apps <- c("Samsung Pay", "Samsung Health", "Google Pay",
-                            "Google Photos", "Android Auto")
-
-gemini_users <- Usage_df %>%
-  filter(PANELISTID %in% treated_ids, AI_CANONICAL == "Gemini") %>%
-  pull(PANELISTID) %>% unique()
-
-chatgpt_users <- Usage_df %>%
-  filter(PANELISTID %in% treated_ids, AI_CANONICAL == "ChatGPT") %>%
-  pull(PANELISTID) %>% unique()
-
-android_check <- Usage_df %>%
-  filter(APPDESCRIPTION %in% android_indicator_apps) %>%
-  mutate(
-    user_group = case_when(
-      PANELISTID %in% gemini_users  ~ "Gemini",
-      PANELISTID %in% chatgpt_users ~ "ChatGPT",
-      PANELISTID %in% control_ids   ~ "Control",
-      TRUE ~ "Other Treated"
-    )
-  ) %>%
-  group_by(user_group, APPDESCRIPTION) %>%
-  summarise(n_users = n_distinct(PANELISTID), .groups = "drop") %>%
-  left_join(
-    tibble(
-      user_group = c("Gemini", "ChatGPT", "Control", "Other Treated"),
-      total_users = c(length(gemini_users), length(chatgpt_users),
-                      length(control_ids),
-                      length(treated_ids) - length(gemini_users) - length(chatgpt_users))
-    ),
-    by = "user_group"
-  ) %>%
-  mutate(adoption_rate = round(n_users / total_users * 100, 1))
-
-cat("Android indicator app adoption rates by group:\n")
-android_check %>%
-  select(user_group, APPDESCRIPTION, adoption_rate) %>%
-  pivot_wider(names_from = user_group, values_from = adoption_rate,
-              values_fill = 0) %>%
-  print()
-
-# =============================================================================
-# QUESTION 4: Do treated users actually look different from controls?
-# Compare banking app rates between treated Gemini users and clean controls
-# =============================================================================
-
-cat("\n========== QUESTION 4: TREATED vs CONTROL COMPARISON ==========\n\n")
-
-comparison_df <- Usage_df %>%
-  filter(APPDESCRIPTION %in% banking_apps) %>%
-  mutate(
-    user_group = case_when(
-      PANELISTID %in% gemini_users          ~ "Gemini",
-      PANELISTID %in% chatgpt_users         ~ "ChatGPT",
-      PANELISTID %in% clean_control_ids     ~ "Clean Control",
-      TRUE ~ "Other"
-    )
-  ) %>%
-  filter(user_group != "Other") %>%
-  group_by(user_group, APPDESCRIPTION) %>%
-  summarise(n_users = n_distinct(PANELISTID), .groups = "drop") %>%
-  left_join(
-    tibble(
-      user_group = c("Gemini", "ChatGPT", "Clean Control"),
-      total_users = c(length(gemini_users), length(chatgpt_users),
-                      length(clean_control_ids))
-    ),
-    by = "user_group"
-  ) %>%
-  mutate(adoption_rate = round(n_users / total_users * 100, 1))
-
-rate_comparison <- comparison_df %>%
-  select(user_group, APPDESCRIPTION, adoption_rate) %>%
-  pivot_wider(names_from = user_group, values_from = adoption_rate,
-              values_fill = 0) %>%
-  mutate(
-    gemini_gap  = Gemini - `Clean Control`,
-    chatgpt_gap = ChatGPT - `Clean Control`
-  ) %>%
-  arrange(desc(gemini_gap))
-
-cat("Banking app adoption rates (%) by user group:\n")
-print(rate_comparison)
-
-cat("\nInterpretation guide:\n")
-cat("  gemini_gap > 5   = Gemini users meaningfully more likely to use this app\n")
-cat("  gemini_gap < -5  = Gemini users meaningfully less likely to use this app\n")
-cat("  |gap| < 5        = Signal is weak, finding might not survive scrutiny\n")
-
-# =============================================================================
-# QUESTION 5: Did the treated user pool grow through the year?
-# Test whether saturation story holds
-# =============================================================================
-
-cat("\n========== QUESTION 5: TREATED POOL GROWTH ==========\n\n")
-
-cumulative_treated <- treatment_dates %>%
-  mutate(treatment_month = floor_date(treatment_week, "month")) %>%
-  count(treatment_month, name = "new_adopters") %>%
-  arrange(treatment_month) %>%
-  mutate(cumulative = cumsum(new_adopters))
-
-cat("Cumulative treated users by month:\n")
-print(cumulative_treated)
-
-cat("\nGrowth ratio (Dec vs Jan cumulative):\n")
-growth_ratio <- tail(cumulative_treated$cumulative, 1) / 
-  head(cumulative_treated$cumulative, 1)
-cat("  ", round(growth_ratio, 2), "x\n")
-
-cat("\nActive treated users per month (people actually using AI that month):\n")
-active_by_month <- Usage_df %>%
-  filter(PANELISTID %in% treated_ids, IS_AI == TRUE) %>%
-  mutate(month = floor_date(WEEK, "month")) %>%
-  group_by(month) %>%
-  summarise(active_users = n_distinct(PANELISTID), .groups = "drop") %>%
-  arrange(month)
-print(active_by_month)
-
-# Visual
-ggplot(cumulative_treated, aes(x = treatment_month, y = cumulative)) +
-  geom_line(linewidth = 1, color = "#2F5496") +
-  geom_point(size = 2, color = "#2F5496") +
-  scale_x_date(date_labels = "%b", date_breaks = "1 month") +
-  labs(
-    title = "Cumulative Treated Users by Month (2023)",
-    subtitle = "Testing the saturation hypothesis",
-    x = NULL, y = "Cumulative treated users"
-  ) +
-  theme_bw()
-
-ggsave("output/04_treated_growth.png", width = 10, height = 5, dpi = 300)
-
-cat("\n========== ALL FIVE QUESTIONS COMPLETE ==========\n")
-
-
-# =============================================================================
-# Logistic regression: Does AI adoption predict financial app usage?
-# Outcome: Binary indicator for whether the user uses any finance app
-# Predictors: AI adoption, controls
-# Visualization: User segment coloring for interpretability
-# =============================================================================
-
-library(tidyverse)
-library(broom)
-
-# Define the finance app universe from the Banking & Finance category
-# Pulled from your actual app_categories mapping
 finance_apps <- app_categories %>%
   filter(category == "Banking & Finance") %>%
   pull(ITEM)
 
-cat("Number of finance apps in scope:", length(finance_apps), "\n")
+cat("Treated users:", length(treated_ids), "\n")
+cat("Control users:", length(control_ids), "\n")
+cat("Finance apps in scope:", length(finance_apps), "\n\n")
 
 # =============================================================================
-# Build user level dataset
+# STEP 1: Derive each treated user's first AI adoption week
 # =============================================================================
 
-reg_df <- User_df %>%
-  select(PANELISTID, AGE, GENDER, TREATED, Weekday, Weekend,
-         Morning, Afternoon, Night) %>%
-  # AI tool flags
+treatment_dates <- Usage_df %>%
+  filter(PANELISTID %in% treated_ids, IS_AI == TRUE) %>%
+  group_by(PANELISTID) %>%
+  summarise(treatment_week = min(WEEK), .groups = "drop") %>%
   left_join(
     Usage_df %>%
       filter(IS_AI == TRUE) %>%
       group_by(PANELISTID) %>%
       summarise(
-        used_chatgpt   = any(AI_CANONICAL == "ChatGPT"),
-        used_gemini    = any(AI_CANONICAL == "Gemini"),
-        used_character = any(AI_CANONICAL == "Character.AI"),
-        used_nova      = any(AI_CANONICAL == "AI Chatbot Nova"),
-        used_other_ai  = any(AI_CANONICAL == "Other AI"),
-        total_ai_minutes = sum(FOREGROUNDDURATION, na.rm = TRUE),
-        n_ai_apps        = n_distinct(APPDESCRIPTION),
+        first_ai_tool = first(AI_CANONICAL[WEEK == min(WEEK)]),
         .groups = "drop"
       ),
     by = "PANELISTID"
+  )
+
+# =============================================================================
+# STEP 2: Build pre/post finance usage for each treated user (4-week window)
+# =============================================================================
+
+WINDOW_WEEKS <- 4
+
+pre_post_df <- Usage_df %>%
+  filter(PANELISTID %in% treated_ids,
+         APPDESCRIPTION %in% finance_apps,
+         FOREGROUNDDURATION > 0) %>%
+  inner_join(treatment_dates, by = "PANELISTID") %>%
+  mutate(
+    weeks_from_treatment = as.numeric(WEEK - treatment_week) / 7,
+    period = case_when(
+      weeks_from_treatment >= -WINDOW_WEEKS & weeks_from_treatment < 0 ~ "pre",
+      weeks_from_treatment >= 0  & weeks_from_treatment <= WINDOW_WEEKS ~ "post",
+      TRUE ~ NA_character_
+    )
   ) %>%
-  # Finance outcome: binary indicator and intensity
+  filter(!is.na(period))
+
+user_periods <- expand_grid(
+  PANELISTID = treated_ids,
+  period     = c("pre", "post")
+) %>%
   left_join(
-    Usage_df %>%
-      filter(APPDESCRIPTION %in% finance_apps, FOREGROUNDDURATION > 0) %>%
-      group_by(PANELISTID) %>%
+    pre_post_df %>%
+      group_by(PANELISTID, period) %>%
       summarise(
-        uses_finance        = TRUE,
-        total_finance_min   = sum(FOREGROUNDDURATION, na.rm = TRUE),
-        n_finance_apps      = n_distinct(APPDESCRIPTION),
+        uses_finance    = TRUE,
+        finance_minutes = sum(FOREGROUNDDURATION, na.rm = TRUE),
+        n_finance_apps  = n_distinct(APPDESCRIPTION),
         .groups = "drop"
       ),
-    by = "PANELISTID"
-  ) %>%
-  # Overall engagement controls
-  left_join(
-    Usage_df %>%
-      group_by(PANELISTID) %>%
-      summarise(
-        total_minutes = sum(FOREGROUNDDURATION, na.rm = TRUE),
-        n_apps_used   = n_distinct(APPDESCRIPTION),
-        .groups = "drop"
-      ),
-    by = "PANELISTID"
+    by = c("PANELISTID", "period")
   ) %>%
   mutate(
-    across(c(used_chatgpt, used_gemini, used_character, used_nova,
-             used_other_ai, uses_finance),
-           ~replace_na(.x, FALSE)),
-    across(c(used_chatgpt, used_gemini, used_character, used_nova,
-             used_other_ai, uses_finance),
-           as.integer),
-    total_ai_minutes = replace_na(total_ai_minutes, 0),
-    n_ai_apps        = replace_na(n_ai_apps, 0),
-    total_finance_min = replace_na(total_finance_min, 0),
-    n_finance_apps    = replace_na(n_finance_apps, 0),
-    log_total_minutes = log(total_minutes + 1),
-    log_n_apps        = log(n_apps_used + 1),
+    uses_finance    = replace_na(uses_finance, FALSE),
+    finance_minutes = replace_na(finance_minutes, 0),
+    n_finance_apps  = replace_na(n_finance_apps, 0),
+    uses_finance    = as.integer(uses_finance)
+  ) %>%
+  left_join(User_df %>% select(PANELISTID, AGE, GENDER), by = "PANELISTID") %>%
+  left_join(treatment_dates %>% select(PANELISTID, first_ai_tool),
+            by = "PANELISTID")
+
+user_periods_wide <- user_periods %>%
+  pivot_wider(id_cols = c(PANELISTID, first_ai_tool, AGE, GENDER),
+              names_from = period,
+              values_from = c(finance_minutes, uses_finance)) %>%
+  mutate(
+    new_finance_user = as.integer(uses_finance_pre == 0 & uses_finance_post == 1)
+  )
+
+# =============================================================================
+# STEP 3: Treated user conversion rates by AI tool
+# =============================================================================
+
+cat("=== Treated user conversion rates by AI tool ===\n")
+treated_conversion_summary <- user_periods_wide %>%
+  filter(!is.na(first_ai_tool)) %>%
+  group_by(first_ai_tool) %>%
+  summarise(
+    n_users              = n(),
+    n_not_using_pre      = sum(uses_finance_pre == 0),
+    n_became_users       = sum(new_finance_user),
+    conversion_rate_pct  = round(n_became_users / n_not_using_pre * 100, 1),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(conversion_rate_pct))
+print(treated_conversion_summary)
+
+# =============================================================================
+# STEP 4: Matched control baseline (same calendar windows as treated users)
+# =============================================================================
+
+treatment_weeks <- treatment_dates %>% pull(treatment_week) %>% unique()
+
+cat("\nComputing matched control baseline across", length(treatment_weeks),
+    "treatment weeks...\n")
+
+baseline_by_week <- map_dfr(treatment_weeks, function(tw) {
+  pre_window  <- c(tw - 28, tw - 1)
+  post_window <- c(tw, tw + 27)
+  
+  pre_users <- Usage_df %>%
+    filter(PANELISTID %in% control_ids,
+           APPDESCRIPTION %in% finance_apps,
+           FOREGROUNDDURATION > 0,
+           WEEK >= pre_window[1] & WEEK <= pre_window[2]) %>%
+    pull(PANELISTID) %>% unique()
+  
+  post_users <- Usage_df %>%
+    filter(PANELISTID %in% control_ids,
+           APPDESCRIPTION %in% finance_apps,
+           FOREGROUNDDURATION > 0,
+           WEEK >= post_window[1] & WEEK <= post_window[2]) %>%
+    pull(PANELISTID) %>% unique()
+  
+  not_pre      <- setdiff(control_ids, pre_users)
+  became_users <- intersect(not_pre, post_users)
+  
+  tibble(
+    treatment_week      = tw,
+    n_not_using_pre     = length(not_pre),
+    n_became_users      = length(became_users),
+    conversion_rate_pct = length(became_users) / length(not_pre) * 100
+  )
+})
+
+control_baseline_avg <- mean(baseline_by_week$conversion_rate_pct)
+cat("\n=== Control baseline ===\n")
+cat("Average conversion rate:", round(control_baseline_avg, 1), "%\n")
+cat("Median conversion rate :", round(median(baseline_by_week$conversion_rate_pct), 1), "%\n\n")
+
+# =============================================================================
+# STEP 5: Build the conversion-level dataset for regression
+# Each row is a user with binary conversion outcome
+# =============================================================================
+
+# Treated users who were not using finance pre
+treated_conversion <- user_periods_wide %>%
+  filter(!is.na(first_ai_tool), uses_finance_pre == 0) %>%
+  transmute(
+    PANELISTID,
+    ai_tool   = first_ai_tool,
+    converted = new_finance_user,
+    AGE, GENDER
+  )
+
+# Control users: sample from 20 random treatment weeks for efficiency
+set.seed(42)
+sampled_weeks <- sample(treatment_weeks, 20)
+
+control_conversion <- map_dfr(sampled_weeks, function(tw) {
+  pre_window  <- c(tw - 28, tw - 1)
+  post_window <- c(tw, tw + 27)
+  
+  pre_users <- Usage_df %>%
+    filter(PANELISTID %in% control_ids,
+           APPDESCRIPTION %in% finance_apps,
+           FOREGROUNDDURATION > 0,
+           WEEK >= pre_window[1] & WEEK <= pre_window[2]) %>%
+    pull(PANELISTID) %>% unique()
+  
+  post_users <- Usage_df %>%
+    filter(PANELISTID %in% control_ids,
+           APPDESCRIPTION %in% finance_apps,
+           FOREGROUNDDURATION > 0,
+           WEEK >= post_window[1] & WEEK <= post_window[2]) %>%
+    pull(PANELISTID) %>% unique()
+  
+  not_pre <- setdiff(control_ids, pre_users)
+  
+  tibble(
+    PANELISTID = not_pre,
+    ai_tool    = "Control",
+    converted  = as.integer(PANELISTID %in% post_users)
+  )
+}) %>%
+  distinct(PANELISTID, .keep_all = TRUE) %>%
+  left_join(User_df %>% select(PANELISTID, AGE, GENDER), by = "PANELISTID")
+
+# Combine treated and control
+conv_df <- bind_rows(treated_conversion, control_conversion) %>%
+  mutate(
+    ai_tool   = factor(ai_tool, levels = c("Control", "ChatGPT", "Gemini",
+                                           "Character.AI", "AI Chatbot Nova",
+                                           "Other AI")),
     age_group = case_when(
       is.na(AGE)  ~ "Unknown",
-      AGE < 23    ~ "15-22 Student",
-      AGE < 38    ~ "23-37 Young Prof",
-      AGE < 58    ~ "38-57 Established",
-      AGE >= 58   ~ "58+ Pre-Retirement"
+      AGE < 23    ~ "15-22",
+      AGE < 38    ~ "23-37",
+      AGE < 58    ~ "38-57",
+      AGE >= 58   ~ "58+"
     ),
-    age_group = factor(age_group, levels = c("38-57 Established", "15-22 Student",
-                                             "23-37 Young Prof", "58+ Pre-Retirement",
-                                             "Unknown"))
+    age_group = factor(age_group, levels = c("38-57", "15-22", "23-37",
+                                             "58+", "Unknown"))
   ) %>%
   filter(!is.na(GENDER))
 
-cat("Dataset size:", nrow(reg_df), "\n")
-cat("Finance app users:", sum(reg_df$uses_finance), 
-    "(", round(mean(reg_df$uses_finance) * 100, 1), "%)\n\n")
+cat("\n=== Conversion dataset composition ===\n")
+conv_df %>% count(ai_tool) %>% print()
 
 # =============================================================================
-# MAIN MODEL: AI tools + demographics + engagement controls
+# STEP 6: Logistic regression on conversion
 # =============================================================================
 
-main_model <- glm(
-  uses_finance ~ used_chatgpt + used_gemini + used_character + used_nova +
-    used_other_ai + age_group + GENDER +
-    log_total_minutes + log_n_apps,
-  data   = reg_df,
+conv_model <- glm(
+  converted ~ ai_tool + age_group + GENDER,
+  data   = conv_df,
   family = binomial(link = "logit")
 )
 
-cat("=== MAIN MODEL ===\n")
-summary(main_model)
+cat("\n=== Logistic regression: conversion outcome ===\n")
+summary(conv_model)
+
+# Extract odds ratios with CIs
+coef_table <- data.frame(
+  term      = names(coef(conv_model)),
+  estimate  = round(exp(coef(conv_model)), 2),
+  conf_low  = round(exp(confint.default(conv_model)[, 1]), 2),
+  conf_high = round(exp(confint.default(conv_model)[, 2]), 2),
+  p_value   = format.pval(summary(conv_model)$coefficients[, 4], digits = 3)
+)
+
+cat("\n=== Odds ratios: conversion vs matched controls ===\n")
+print(coef_table)
 
 # =============================================================================
-# Forest plot with user type coloring
+# STEP 7: Visualization 1 — Raw conversion rates bar chart
 # =============================================================================
 
-coef_df <- tidy(main_model, conf.int = TRUE, exponentiate = TRUE) %>%
-  filter(term != "(Intercept)") %>%
-  mutate(
-    # Clean up term names
-    clean_term = case_when(
-      term == "used_chatgpt"      ~ "ChatGPT",
-      term == "used_gemini"       ~ "Gemini",
-      term == "used_character"    ~ "Character.AI",
-      term == "used_nova"         ~ "AI Chatbot Nova",
-      term == "used_other_ai"     ~ "Other AI",
-      str_detect(term, "age_group") ~ str_replace(term, "age_group", ""),
-      term == "GENDERMale"        ~ "Male",
-      term == "log_total_minutes" ~ "Total usage (log)",
-      term == "log_n_apps"        ~ "App diversity (log)",
-      TRUE ~ term
-    ),
-    # Categorize each predictor for color
-    predictor_type = case_when(
-      term %in% c("used_chatgpt", "used_gemini", "used_character",
-                  "used_nova", "used_other_ai")    ~ "AI Tool",
-      str_detect(term, "age_group")                ~ "Age Group",
-      term == "GENDERMale"                         ~ "Gender",
-      term %in% c("log_total_minutes", "log_n_apps") ~ "Engagement",
-      TRUE ~ "Other"
-    ),
-    predictor_type = factor(predictor_type,
-                            levels = c("AI Tool", "Engagement", "Age Group", "Gender")),
-    significant = p.value < 0.05
-  ) %>%
-  arrange(predictor_type, desc(estimate))
+conversion_data <- bind_rows(
+  treated_conversion_summary %>%
+    transmute(group = first_ai_tool,
+              conversion = conversion_rate_pct,
+              group_type = "AI Tool"),
+  tibble(group = "Control baseline",
+         conversion = round(control_baseline_avg, 1),
+         group_type = "Control")
+)
 
-# Forest plot
-forest_plot <- ggplot(coef_df,
-                      aes(x = estimate,
-                          y = reorder(clean_term, as.numeric(predictor_type) * -1000 + estimate),
-                          color = predictor_type)) +
-  geom_point(size = 3.5, aes(shape = significant)) +
-  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.3, linewidth = 0.7) +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
-  scale_x_log10(breaks = c(0.5, 0.75, 1, 1.5, 2, 3, 5, 10)) +
-  scale_color_manual(values = c(
-    "AI Tool"    = "#2F5496",
-    "Engagement" = "#C0504D",
-    "Age Group"  = "#9BBB59",
-    "Gender"     = "#8064A2"
+conv_bar_plot <- ggplot(conversion_data,
+                        aes(x = conversion,
+                            y = reorder(group, conversion),
+                            fill = group)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = paste0(conversion, "%")),
+            hjust = -0.15, size = 4.5, fontface = "bold",
+            color = "#2B2D42") +
+  geom_vline(xintercept = control_baseline_avg, linetype = "dashed",
+             color = "#6B7280", linewidth = 0.6) +
+  annotate("text", x = control_baseline_avg, y = 6.6,
+           label = "Control baseline",
+           hjust = -0.1, vjust = 0, size = 3.3,
+           color = "#6B7280", fontface = "italic") +
+  scale_fill_manual(values = c(
+    "Gemini"            = "#2F80A8",
+    "ChatGPT"           = "#4A5568",
+    "Other AI"          = "#4A5568",
+    "Character.AI"      = "#4A5568",
+    "AI Chatbot Nova"   = "#4A5568",
+    "Control baseline"  = "#9CA3AF"
   )) +
-  scale_shape_manual(values = c("TRUE" = 19, "FALSE" = 1), guide = "none") +
+  scale_x_continuous(limits = c(0, 108), breaks = seq(0, 100, 20),
+                     labels = function(x) paste0(x, "%")) +
   labs(
-    title    = "What Predicts Finance App Usage?",
-    subtitle = "Odds ratios from logistic regression (log scale). Reference age: 38-57 Established.",
-    x        = "Odds Ratio (95% CI)",
+    title    = "AI adoption dramatically increases finance app conversion",
+    subtitle = "Share of users with no pre-adoption finance app usage who started using\nfinance apps in the 4 weeks after. Controls matched on treatment week.",
+    x        = "Conversion rate (within 4 weeks)",
     y        = NULL,
-    color    = "Predictor Type",
-    caption  = "Solid points indicate p < 0.05. Values above 1 increase odds of finance app usage."
+    caption  = "n = 1,623 treated users across 5 AI tool groups. Control baseline averaged across 52 treatment-week matched samples."
   ) +
-  theme_bw() +
+  theme_minimal() +
   theme(
-    legend.position  = "right",
-    plot.title       = element_text(face = "bold", size = 14),
-    plot.subtitle    = element_text(size = 11, color = "grey30"),
-    axis.text.y      = element_text(size = 11),
-    panel.grid.minor = element_blank()
+    legend.position    = "none",
+    plot.title         = element_text(face = "bold", size = 15, color = "#1E2761"),
+    plot.subtitle      = element_text(size = 11, color = "#4B5563",
+                                      margin = margin(t = 4, b = 12)),
+    plot.caption       = element_text(size = 9, color = "#6B7280", hjust = 0,
+                                      margin = margin(t = 12)),
+    axis.text.y        = element_text(size = 11, color = "#2B2D42"),
+    axis.text.x        = element_text(size = 10, color = "#6B7280"),
+    axis.title.x       = element_text(size = 10, color = "#6B7280",
+                                      margin = margin(t = 8)),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_line(color = "#E5E7EB", linewidth = 0.3),
+    plot.margin        = margin(t = 30, r = 20, b = 15, l = 10)
+  ) +
+  coord_cartesian(clip = "off")
+
+print(conv_bar_plot)
+ggsave("output/07_conversion_comparison.png", conv_bar_plot,
+       width = 10, height = 5.5, dpi = 300)
+
+# =============================================================================
+# STEP 8: Visualization 2 — Odds ratio coefficient plot
+# =============================================================================
+
+coef_plot_df <- data.frame(
+  term      = names(coef(conv_model)),
+  estimate  = exp(coef(conv_model)),
+  conf_low  = exp(confint.default(conv_model)[, 1]),
+  conf_high = exp(confint.default(conv_model)[, 2]),
+  p_value   = summary(conv_model)$coefficients[, 4]
+) %>%
+  filter(str_detect(term, "ai_tool")) %>%
+  mutate(
+    tool = str_remove(term, "ai_tool"),
+    tool = factor(tool, levels = c("ChatGPT", "Gemini", "Character.AI",
+                                   "AI Chatbot Nova", "Other AI")),
+    is_gemini = tool == "Gemini"
   )
 
-print(forest_plot)
-ggsave("output/06_finance_odds_ratios.png", forest_plot,
-       width = 11, height = 7, dpi = 300)
+coef_plot <- ggplot(coef_plot_df,
+                    aes(x = estimate,
+                        y = reorder(tool, estimate),
+                        color = is_gemini)) +
+  geom_vline(xintercept = 1, linetype = "dashed",
+             color = "#6B7280", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = conf_low, xmax = conf_high),
+                 height = 0.25, linewidth = 1) +
+  geom_point(size = 5) +
+  geom_text(aes(label = paste0(round(estimate, 1), "x")),
+            hjust = -0.6, size = 4.5, fontface = "bold",
+            color = "#2B2D42") +
+  scale_color_manual(values = c("TRUE" = "#2F80A8", "FALSE" = "#4A5568")) +
+  scale_x_log10(breaks = c(1, 2, 5, 10, 20, 50, 100),
+                labels = function(x) paste0(x, "x")) +
+  labs(
+    title    = "Odds of finance app conversion vs matched controls",
+    subtitle = "Among users not using finance apps pre-adoption. Control baseline = 1.0x.\nControlling for age group and gender.",
+    x        = "Odds ratio (95% CI, log scale)",
+    y        = NULL,
+    caption  = "All estimates p < 0.001. Reference: matched control users in same calendar windows."
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position    = "none",
+    plot.title         = element_text(face = "bold", size = 15, color = "#1E2761"),
+    plot.subtitle      = element_text(size = 11, color = "#4B5563",
+                                      margin = margin(t = 4, b = 12)),
+    plot.caption       = element_text(size = 9, color = "#6B7280", hjust = 0,
+                                      margin = margin(t = 12)),
+    axis.text.y        = element_text(size = 12, color = "#2B2D42"),
+    axis.text.x        = element_text(size = 10, color = "#6B7280"),
+    axis.title.x       = element_text(size = 10, color = "#6B7280",
+                                      margin = margin(t = 8)),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_line(color = "#E5E7EB", linewidth = 0.3)
+  )
 
-why did you# =============================================================================
-# Summary output for the paper
-# =============================================================================
+print(coef_plot)
+ggsave("output/08_conversion_odds.png", coef_plot,
+       width = 10, height = 5, dpi = 300)
 
-cat("\n=== Key odds ratios for finance app usage ===\n")
-coef_df %>%
-  filter(predictor_type == "AI Tool") %>%
-  select(clean_term, estimate, conf.low, conf.high, p.value) %>%
-  mutate(across(c(estimate, conf.low, conf.high), ~round(.x, 2)),
-         p.value = format.pval(p.value, digits = 3)) %>%
-  print()
-
-library(pscl)
-cat("\nMcFadden Pseudo R-squared:", round(pR2(main_model)["McFadden"], 3), "\n")
-
-# =============================================================================
-# Diagnostic: Observed vs predicted finance usage rate by AI adoption status
-# =============================================================================
-
-cat("\n=== Observed finance usage rate by AI tool adoption ===\n")
-reg_df %>%
-  pivot_longer(c(used_chatgpt, used_gemini, used_character, used_nova, used_other_ai),
-               names_to = "ai_tool", values_to = "used") %>%
-  group_by(ai_tool, used) %>%
-  summarise(finance_rate = mean(uses_finance), n = n(), .groups = "drop") %>%
-  pivot_wider(names_from = used, values_from = c(finance_rate, n)) %>%
-  mutate(
-    ai_tool = str_remove(ai_tool, "used_"),
-    gap_pct = round((finance_rate_1 - finance_rate_0) * 100, 1)
-  ) %>%
-  print()
+cat("\n=== Analysis complete ===\n")
+cat("Charts saved to output/07_conversion_comparison.png and 08_conversion_odds.png\n")
 
 
-reg_df %>%
-  count(age_group) %>%
-  mutate(finance_rate = NA)
 
-# With finance rates
-reg_df %>%
-  group_by(age_group) %>%
-  summarise(
-    n = n(),
-    finance_rate = round(mean(uses_finance) * 100, 1),
-    .groups = "drop"
-  ) %>%
-  arrange(desc(n))
