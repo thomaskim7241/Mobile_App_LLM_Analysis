@@ -742,9 +742,9 @@ treated_conversion <- user_periods_wide %>%
     AGE, GENDER
   )
 
-# Control users: sample from 20 random treatment weeks for efficiency
-set.seed(42)
-sampled_weeks <- sample(treatment_weeks, 20)
+# Control users: sample from 35 random treatment weeks for efficiency
+set.seed(94)
+sampled_weeks <- sample(treatment_weeks, 35)
 
 control_conversion <- map_dfr(sampled_weeks, function(tw) {
   pre_window  <- c(tw - 28, tw - 1)
@@ -918,7 +918,7 @@ coef_plot <- ggplot(coef_plot_df,
                  height = 0.25, linewidth = 1) +
   geom_point(size = 5) +
   geom_text(aes(label = paste0(round(estimate, 1), "x")),
-            hjust = -0.6, size = 4.5, fontface = "bold",
+            nudge_y = 0.3, size = 4.5, fontface = "bold",
             color = "#2B2D42") +
   scale_color_manual(values = c("TRUE" = "#2F80A8", "FALSE" = "#4A5568")) +
   scale_x_log10(breaks = c(1, 2, 5, 10, 20, 50, 100),
